@@ -1,0 +1,95 @@
+name: OpenWrt Auto-Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: 'Path to your .config file'
+        required: true
+        default: '.config'
+      version_base:
+        description: 'Base version number (e.g., 1.0)'
+        required: false
+        default: '1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build_and_release:
+    name: Build and Release OpenWrt
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: openwrt
+          fetch-depth: 0  # 需要获取完整历史记录来计算版本号
+
+      - name: Copy custom config
+        run: cp ${{ github.event.inputs.config_path }} openwrt/.config
+
+      - name: Calculate next version number
+        id: version
+        run: |
+          # 获取基础版本号
+          BASE_VERSION=${{ github.event.inputs.version_base }}
+          
+          # 获取当天日期 (YYYYMMDD)
+          BUILD_DATE=$(date +'%Y%m%d')
+          
+          # 计算当天已有的构建次数
+          BUILD_COUNT=$(git tag -l "v${BASE_VERSION}-${BUILD_DATE}*" | wc -l)
+          NEXT_COUNT=$((BUILD_COUNT + 1))
+          
+          # 生成完整版本号 (格式: v1.0-20240524-1)
+          FULL_VERSION="v${BASE_VERSION}-${BUILD_DATE}-${NEXT_COUNT}"
+          echo "version=${FULL_VERSION}" >> $GITHUB_OUTPUT
+          echo "Next version: ${FULL_VERSION}"
+
+      - name: Update feeds
+        working-directory: openwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Download packages
+        working-directory: openwrt
+        run: make download -j$(nproc)
+
+      - name: Compile firmware
+        working-directory: openwrt
+        run: make -j$(nproc) || make -j1 V=s
+
+      - name: Find firmware files
+        working-directory: openwrt
+        id: find-firmware
+        run: |
+          FIRMWARE_PATH=$(find bin/targets/ -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \))
+          echo "firmware_path=${FIRMWARE_PATH}" >> $GITHUB_OUTPUT
+          echo "Found firmware: ${FIRMWARE_PATH}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: OpenWrt ${{ steps.version.outputs.version }}
+          body: |
+            ### 自动构建的 OpenWrt 固件
+            
+            **版本**: ${{ steps.version.outputs.version }}
+            **构建日期**: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+            **配置文件**: ${{ github.event.inputs.config_path }}
+            
+            包含以下固件文件:
+            ${{ steps.find-firmware.outputs.firmware_path }}
+          files: ${{ steps.find-firmware.outputs.firmware_path }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Print release info
+        run: |
+          echo "Release created: ${{ steps.version.outputs.version }}"
+          echo "Firmware files: ${{ steps.find-firmware.outputs.firmware_path }}"
