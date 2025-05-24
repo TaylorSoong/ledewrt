@@ -6,7 +6,7 @@ on:
       config_path:
         description: 'Path to your .config file'
         required: true
-        default: '.config'
+        default: '${{ github.workspace }}.config'
       version_base:
         description: 'Base version number (e.g., 1.0)'
         required: false
